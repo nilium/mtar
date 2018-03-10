@@ -344,7 +344,7 @@ func addFile(w *tar.Writer, src, dest string, opts *FileOpts, allowRecursive boo
 		Format:   tar.FormatPAX,
 	}
 
-	if uid, gid, ok := getUidGid(st); ok {
+	if uid, gid, ok := opts.getUidGid(st); ok {
 		hdr.Uid, err = strconv.Atoi(uid.Uid)
 		hdr.Uname = uid.Username
 		if err != nil {
@@ -479,35 +479,15 @@ func shouldSkip(set []Matcher, s string) bool {
 	return false
 }
 
-func getUidGid(f os.FileInfo) (*user.User, *user.Group, bool) {
-	stat, ok := f.Sys().(*syscall.Stat_t)
-	if !ok {
-		return nil, nil, false
-	}
-	uid, gid := strconv.FormatUint(uint64(stat.Uid), 10), strconv.FormatUint(uint64(stat.Gid), 10)
-	u, err := user.LookupId(uid)
-	if err != nil {
-		return nil, nil, false
-	}
-	g, err := user.LookupGroupId(gid)
-	if err != nil {
-		return nil, nil, false
-	}
-	return u, g, true
-}
-
 type FileOpts struct {
 	noRecursive bool
+
+	user  *user.User
+	group *user.Group
 
 	// exclusive:
 	dir  bool
 	link string
-
-	uid      *int
-	username string
-
-	gid   *int
-	group string
 
 	mode int64
 
@@ -555,24 +535,28 @@ func parseFileOptions(opts string) (*FileOpts, error) {
 				return nil, errors.New("may not set an empty link name")
 			}
 		case strings.HasPrefix(f, "uid="):
-			if uid, err := strconv.Atoi(f[len("uid="):]); err != nil {
-				return nil, fmt.Errorf("invalid uid: %v", err)
-			} else {
-				fo.uid = &uid
+			uid := f[len("uid="):]
+			fo.user, err = user.LookupId(uid)
+			if err != nil {
+				return nil, fmt.Errorf("unable to lookup group by id %q: %v", uid, err)
 			}
 		case strings.HasPrefix(f, "gid="):
-			if gid, err := strconv.Atoi(f[len("gid="):]); err != nil {
-				return nil, fmt.Errorf("invalid gid: %v", err)
-			} else {
-				fo.gid = &gid
+			gid := f[len("gid="):]
+			fo.group, err = user.LookupGroupId(gid)
+			if err != nil {
+				return nil, fmt.Errorf("unable to lookup group by id %q: %v", gid, err)
 			}
 		case strings.HasPrefix(f, "owner="):
-			if fo.username = f[len("owner="):]; fo.username == "" {
-				return nil, errors.New("may not set an empty username for an owner")
+			owner := f[len("owner="):]
+			fo.user, err = user.Lookup(owner)
+			if err != nil {
+				return nil, fmt.Errorf("unable to lookup owner by name %q: %v", owner, err)
 			}
 		case strings.HasPrefix(f, "group="):
-			if fo.group = f[len("group="):]; fo.group == "" {
-				return nil, errors.New("may not set an empty group name")
+			group := f[len("group="):]
+			fo.group, err = user.LookupGroup(group)
+			if err != nil {
+				return nil, fmt.Errorf("unable to lookup group by name %q: %v", group, err)
 			}
 		case strings.HasPrefix(f, "mode="):
 			if fo.mode, err = strconv.ParseInt(f[len("mode="):], 0, 64); err != nil {
@@ -633,7 +617,51 @@ func parseFileOptions(opts string) (*FileOpts, error) {
 		}
 	}
 
+	if fo.user != nil && fo.group == nil {
+		fo.group, err = user.LookupGroupId(fo.user.Gid)
+		if err != nil {
+			return nil, fmt.Errorf("unable to look up group for uid %q: %v", fo.user.Uid, err)
+		}
+	}
+
 	return fo, nil
+}
+
+func (f *FileOpts) getUidGid(fi os.FileInfo) (userent *user.User, groupent *user.Group, ok bool) {
+	ok = true
+	if f != nil {
+		userent = f.user
+		groupent = f.group
+	}
+
+	if userent != nil && groupent != nil {
+		return
+	}
+
+	stat, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, nil, false
+	}
+
+	uid, gid := strconv.FormatUint(uint64(stat.Uid), 10), strconv.FormatUint(uint64(stat.Gid), 10)
+
+	if userent == nil {
+		u, err := user.LookupId(uid)
+		if err != nil {
+			return nil, nil, false
+		}
+		userent = u
+	}
+
+	if groupent == nil {
+		g, err := user.LookupGroupId(gid)
+		if err != nil {
+			return nil, nil, false
+		}
+		groupent = g
+	}
+
+	return
 }
 
 func (f *FileOpts) allowRecursive() bool {
@@ -643,20 +671,6 @@ func (f *FileOpts) allowRecursive() bool {
 func (f *FileOpts) setHeaderFields(hdr *tar.Header) {
 	if f == nil {
 		return
-	}
-
-	if f.uid != nil {
-		hdr.Uid = *f.uid
-	}
-	if f.gid != nil {
-		hdr.Gid = *f.gid
-	}
-
-	if f.username != "" {
-		hdr.Uname = f.username
-	}
-	if f.group != "" {
-		hdr.Gname = f.group
 	}
 
 	if f.mode != 0 {
