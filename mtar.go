@@ -308,6 +308,7 @@ func addFile(w *tar.Writer, src, dest string, opts *FileOpts, allowRecursive boo
 		return
 	}
 
+	var r io.Reader
 	var needBuffer bool
 	var st os.FileInfo
 	var err error
@@ -381,8 +382,15 @@ func addFile(w *tar.Writer, src, dest string, opts *FileOpts, allowRecursive boo
 
 	opts.setHeaderFields(hdr)
 
+	switch path.Clean(hdr.Name) {
+	case "./", ".", "..", "/":
+		if hdr.Typeflag == tar.TypeDir {
+			goto addDirOnly
+		}
+		return
+	}
+
 	// Buffer input file if it's not a regular file
-	var r io.Reader
 	if needBuffer && hdr.Typeflag == tar.TypeReg {
 		var file *os.File
 		if src == "-" {
@@ -405,6 +413,7 @@ func addFile(w *tar.Writer, src, dest string, opts *FileOpts, allowRecursive boo
 
 	failOnError("write header: "+hdr.Name, w.WriteHeader(hdr))
 
+addDirOnly:
 	if st.Mode().IsDir() {
 		if allowRecursive && opts.allowRecursive() {
 			addRecursive(w, src, dest, opts)
@@ -433,8 +442,12 @@ func addFile(w *tar.Writer, src, dest string, opts *FileOpts, allowRecursive boo
 
 func addRecursive(w *tar.Writer, src, prefix string, opts *FileOpts) {
 	src = strings.TrimRight(src, "/")
+	src = filepath.Clean(src) + "/"
 	filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
-		if filepath.Clean(p) == filepath.Clean(src) || shouldSkip(skipSrcGlobs, p) {
+		if info.IsDir() {
+			p += "/"
+		}
+		if p == src || shouldSkip(skipSrcGlobs, p) {
 			return nil
 		}
 		dest := path.Join(prefix, strings.TrimPrefix(p, src))
