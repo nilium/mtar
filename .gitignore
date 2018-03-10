@@ -1,0 +1,4 @@
+.*.sw[op]
+*.tar
+mtar
+.DS_Store
