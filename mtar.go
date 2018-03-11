@@ -444,7 +444,7 @@ func addRecursive(w *tar.Writer, src, prefix string, opts *FileOpts) {
 	src = strings.TrimRight(src, "/")
 	src = filepath.Clean(src) + "/"
 	filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
-		if info.IsDir() {
+		if info.IsDir() && !strings.HasSuffix(p, "/") {
 			p += "/"
 		}
 		if p == src || shouldSkip(skipSrcGlobs, p) {
