@@ -366,10 +366,14 @@ func addFile(w *tar.Writer, src, dest string, opts *FileOpts, allowRecursive boo
 		hdr.Typeflag = tar.TypeDir
 		hdr.Name = dest + "/"
 	case st.Mode()&os.ModeSymlink == os.ModeSymlink:
-		hdr.Typeflag = tar.TypeSymlink
 		hdr.Name = dest
 		link, err := os.Readlink(src)
 		failOnError("cannot resolve symlink", err)
+		if strings.HasPrefix(src, "/proc/self/fd/") && strings.HasPrefix(link, "pipe:[") && strings.HasSuffix(link, "]") { // Special case: <(proc) pipe
+			needBuffer = true
+			break
+		}
+		hdr.Typeflag = tar.TypeSymlink
 		hdr.Linkname = link
 	default:
 		log.Print("skipping file: ", src, ": cannot add file")
