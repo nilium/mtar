@@ -65,6 +65,8 @@
 //        Force file to become a dir entry. Implies norec.
 //      link=LINK
 //        Force file to become a symlink pointing to LINK.
+//      ref=LINK
+//        Force file to become a hard link pointing to LINK.
 //      nouser
 //        Strip user information from the file.
 //      uid=UID | owner=USERNAME
@@ -199,6 +201,8 @@ available (all option names are case-sensitive):
     Force file to become a dir entry. Implies norec.
   link=LINK
     Force file to become a symlink pointing to LINK.
+  ref=LINK
+    Force file to become a hard link pointing to LINK.
   uid=UID | owner=USERNAME
     Set the owner's uid and/or username for the file entry.
   gid=GID | group=GROUPNAME
@@ -555,8 +559,9 @@ type FileOpts struct {
 	group  *user.Group
 
 	// exclusive:
-	dir  bool
-	link string
+	dir      bool
+	link     string
+	linkType byte
 
 	mode int64
 
@@ -598,12 +603,27 @@ func (fo *FileOpts) parse(opts string) error {
 			fo.dir = true
 			fo.noRecursive = true
 		case strings.HasPrefix(f, "link="):
+			if fo.link != "" {
+				return errors.New("link already assigned to file")
+			}
 			if fo.dir {
 				return errors.New("may not set link with dir")
 			}
 			if fo.link = f[len("link="):]; fo.link == "" {
 				return errors.New("may not set an empty link name")
 			}
+			fo.linkType = tar.TypeSymlink
+		case strings.HasPrefix(f, "ref="):
+			if fo.link != "" {
+				return errors.New("link already assigned to file")
+			}
+			if fo.dir {
+				return errors.New("may not set link with dir")
+			}
+			if fo.link = f[len("ref="):]; fo.link == "" {
+				return errors.New("may not set an empty link name")
+			}
+			fo.linkType = tar.TypeLink
 		case f == "nouser":
 			fo.nouser = true
 		case strings.HasPrefix(f, "uid="):
@@ -765,7 +785,8 @@ func (f *FileOpts) setHeaderFields(hdr *tar.Header) {
 		}
 	} else if f.link != "" {
 		hdr.Linkname = f.link
-		hdr.Typeflag = tar.TypeSymlink
+		hdr.Typeflag = f.linkType
+		hdr.Size = 0
 	}
 
 	if !f.mtime.IsZero() {
