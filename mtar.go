@@ -123,11 +123,15 @@
 //        Add a filter to select only input paths that match the REGEX.
 //      -Ri, -Ro, -R
 //        Reset input, output, or all filters, respectively.
+//      -A
+//        Read one or more tar streams from standard input and concatenate them
+//        to the output.
 //
 package main // import "go.spiff.io/mtar"
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -265,7 +269,10 @@ control archive creation:
   -iREGEX | -i REGEX
     Add a filter to select only input paths that match the REGEX.
   -Ri, -Ro, -R
-    Reset input, output, or all filters, respectively.`+"\n")
+    Reset input, output, or all filters, respectively.
+  -A
+    Read one or more tar streams from standard input and concatenate them
+    to the output.`+"\n")
 }
 
 func main() {
@@ -292,6 +299,21 @@ func main() {
 
 	for s, ok := argv.Shift(); ok; s, ok = argv.Shift() {
 		switch {
+		// Concatenate
+		case s == "-A":
+			catPath := ""
+			if s, ok = argv.Shift(); ok {
+				catPath = s
+			}
+			if err := concatenateTarFile(w, catPath); err != nil {
+				log.Fatal("-A: error concatenating tar stream: ", err)
+			}
+		case strings.HasPrefix(s, "-A"):
+			catPath := strings.TrimPrefix(s, "-A")
+			if err := concatenateTarFile(w, catPath); err != nil {
+				log.Fatal("-A: error concatenating tar stream: ", err)
+			}
+
 		// Set format
 		case strings.HasPrefix(s, "-F"):
 			fstr := strings.TrimPrefix(s, "-F")
@@ -529,6 +551,72 @@ addDirOnly:
 	}
 
 	failOnError("flush error: "+src, w.Flush())
+}
+
+func concatenateTarFile(w *tar.Writer, src string) error {
+	input := os.Stdin
+	if src != "" && src != "-" {
+		f, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		input = f
+	}
+	r := bufio.NewReader(input)
+	for {
+		err := concatenateTarStream(w, r)
+		if errors.Is(err, io.EOF) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+	}
+}
+
+func concatenateTarStream(w *tar.Writer, r *bufio.Reader) error {
+	_, err := r.ReadByte()
+	if err == io.EOF {
+		return err
+	}
+
+	if err = r.UnreadByte(); err != nil {
+		return fmt.Errorf("error unreading probe byte: %w", err)
+	}
+
+	t := tar.NewReader(r)
+	for {
+		hdr, err := t.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("error reading tar header: %w", err)
+		}
+
+		dup := *hdr
+		dup.Format = hdrFormat
+
+		if skipUserInfo {
+			dup.Gid, dup.Gname = 0, ""
+			dup.Uid, dup.Uname = 0, ""
+		}
+
+		if shouldSkip(skipSrcGlobs, dup.Name) {
+			continue
+		}
+
+		if err := w.WriteHeader(&dup); err != nil {
+			return fmt.Errorf("error copying %q header from tar stream: %w", hdr.Name, err)
+		}
+		written[hdr.Name] = struct{}{}
+
+		if hdr.Size > 0 {
+			f := io.LimitReader(t, hdr.Size)
+			if _, err := io.Copy(w, f); err != nil {
+				return fmt.Errorf("error copying %q from tar stream: %w", hdr.Name, err)
+			}
+		}
+	}
 }
 
 func addRecursive(w *tar.Writer, src, prefix string, opts *FileOpts) {
