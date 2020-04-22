@@ -65,6 +65,8 @@
 //        Force file to become a dir entry. Implies norec.
 //      link=LINK
 //        Force file to become a symlink pointing to LINK.
+//      nouser
+//        Strip user information from the file.
 //      uid=UID | owner=USERNAME
 //        Set the owner's uid and/or username for the file entry.
 //      gid=GID | group=GROUPNAME
@@ -86,6 +88,10 @@
 //
 //      -h | --help
 //        When passed as the first argument, print this usage text.
+//      -U
+//        Do not assign user information to files.
+//      -u
+//        Assign user information to files (default).
 //      -Cdir | -C dir
 //        Change to directory (relative to PWD at all times; -C. will reset
 //        the current directory) for subsequent file additions.
@@ -136,6 +142,7 @@ var startupTime = time.Now()
 var startupDir string
 var skipSrcGlobs []Matcher
 var skipDestGlobs []Matcher
+var skipUserInfo bool
 
 func (p *Args) Shift() (s string, ok bool) {
 	if ok = len(p.args) > 0; ok {
@@ -201,6 +208,10 @@ control archive creation:
 
   -h | --help
     When passed as the first argument, print this usage text.
+  -U
+    Do not assign user information to files.
+  -u
+    Assign user information to files (default).
   -Cdir | -C dir
     Change to directory (relative to PWD at all times; -C. will reset
     the current directory) for subsequent file additions.
@@ -267,6 +278,11 @@ func main() {
 			want := s[1] == 'o'
 			skipDestGlobs = append(skipDestGlobs, Matcher{rx: regexp.MustCompile(s[2:]), want: want})
 
+		// -U  Do not collect user info for headers unless explicitly set
+		// -u  Enable collection.
+		case s == "-U", s == "-u":
+			skipUserInfo = s == "-U"
+
 		// Change dir
 		case s == "-C": // cd
 			if s, ok = argv.Shift(); !ok {
@@ -291,9 +307,9 @@ func main() {
 				src, dest = s[:idx], s[idx+1:]
 			}
 
-			var opts *FileOpts
+			opts := newFileOpts()
 			if idx := strings.IndexByte(dest, ':'); idx > -1 {
-				opts, err = parseFileOptions(dest[idx+1:])
+				err = opts.parse(dest[idx+1:])
 				failOnError("cannot parse options for "+src, err)
 				dest = dest[:idx]
 			}
@@ -486,8 +502,9 @@ func shouldSkip(set []Matcher, s string) bool {
 type FileOpts struct {
 	noRecursive bool
 
-	user  *user.User
-	group *user.Group
+	nouser bool
+	user   *user.User
+	group  *user.Group
 
 	// exclusive:
 	dir  bool
@@ -501,7 +518,9 @@ type FileOpts struct {
 }
 
 func newFileOpts() *FileOpts {
-	return &FileOpts{}
+	return &FileOpts{
+		nouser: skipUserInfo,
+	}
 }
 
 var timeLayouts = []string{
@@ -509,14 +528,13 @@ var timeLayouts = []string{
 	// TODO: add additional layouts if needed
 }
 
-func parseFileOptions(opts string) (*FileOpts, error) {
+func (fo *FileOpts) parse(opts string) error {
 	fields := strings.FieldsFunc(opts, isComma)
 	if len(fields) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	var err error
-	fo := newFileOpts()
 	for _, f := range fields {
 		f = strings.TrimSpace(f)
 		if f == "" {
@@ -527,46 +545,52 @@ func parseFileOptions(opts string) (*FileOpts, error) {
 			fo.noRecursive = true
 		case f == "dir":
 			if fo.link != "" {
-				return nil, fmt.Errorf("may not set dir with link=%s", fo.link)
+				return fmt.Errorf("may not set dir with link=%s", fo.link)
 			}
 			fo.dir = true
 			fo.noRecursive = true
 		case strings.HasPrefix(f, "link="):
 			if fo.dir {
-				return nil, errors.New("may not set link with dir")
+				return errors.New("may not set link with dir")
 			}
 			if fo.link = f[len("link="):]; fo.link == "" {
-				return nil, errors.New("may not set an empty link name")
+				return errors.New("may not set an empty link name")
 			}
+		case f == "nouser":
+			fo.nouser = true
 		case strings.HasPrefix(f, "uid="):
+			fo.nouser = false
 			uid := f[len("uid="):]
 			fo.user, err = user.LookupId(uid)
 			if err != nil {
-				return nil, fmt.Errorf("unable to lookup group by id %q: %v", uid, err)
+				return fmt.Errorf("unable to lookup group by id %q: %v", uid, err)
 			}
 		case strings.HasPrefix(f, "gid="):
+			fo.nouser = false
 			gid := f[len("gid="):]
 			fo.group, err = user.LookupGroupId(gid)
 			if err != nil {
-				return nil, fmt.Errorf("unable to lookup group by id %q: %v", gid, err)
+				return fmt.Errorf("unable to lookup group by id %q: %v", gid, err)
 			}
 		case strings.HasPrefix(f, "owner="):
+			fo.nouser = false
 			owner := f[len("owner="):]
 			fo.user, err = user.Lookup(owner)
 			if err != nil {
-				return nil, fmt.Errorf("unable to lookup owner by name %q: %v", owner, err)
+				return fmt.Errorf("unable to lookup owner by name %q: %v", owner, err)
 			}
 		case strings.HasPrefix(f, "group="):
+			fo.nouser = false
 			group := f[len("group="):]
 			fo.group, err = user.LookupGroup(group)
 			if err != nil {
-				return nil, fmt.Errorf("unable to lookup group by name %q: %v", group, err)
+				return fmt.Errorf("unable to lookup group by name %q: %v", group, err)
 			}
 		case strings.HasPrefix(f, "mode="):
 			if fo.mode, err = strconv.ParseInt(f[len("mode="):], 0, 64); err != nil {
-				return nil, fmt.Errorf("invalid mode: %v", err)
+				return fmt.Errorf("invalid mode: %v", err)
 			} else if fo.mode == 0 {
-				return nil, errors.New("invalid mode: may not be 0")
+				return errors.New("invalid mode: may not be 0")
 			}
 		case strings.HasPrefix(f, "mtime=") || strings.HasPrefix(f, "atime=") || strings.HasPrefix(f, "ctime="):
 			var tp *time.Time
@@ -614,26 +638,29 @@ func parseFileOptions(opts string) (*FileOpts, error) {
 			}
 		timeFailure:
 			if tp.IsZero() {
-				return nil, fmt.Errorf("invalid %s: %q", f[:len("mtime")], ts)
+				return fmt.Errorf("invalid %s: %q", f[:len("mtime")], ts)
 			}
 		default:
-			return nil, fmt.Errorf("unexpected option: %q", f)
+			return fmt.Errorf("unexpected option: %q", f)
 		}
 	}
 
 	if fo.user != nil && fo.group == nil {
 		fo.group, err = user.LookupGroupId(fo.user.Gid)
 		if err != nil {
-			return nil, fmt.Errorf("unable to look up group for uid %q: %v", fo.user.Uid, err)
+			return fmt.Errorf("unable to look up group for uid %q: %v", fo.user.Uid, err)
 		}
 	}
 
-	return fo, nil
+	return nil
 }
 
 func (f *FileOpts) getUidGid(fi os.FileInfo) (userent *user.User, groupent *user.Group, ok bool) {
 	ok = true
 	if f != nil {
+		if f.nouser {
+			return nil, nil, false
+		}
 		userent = f.user
 		groupent = f.group
 	}
