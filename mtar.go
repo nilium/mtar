@@ -163,7 +163,6 @@ var (
 	startupTime = time.Now()
 
 	hdrFormat     = tar.FormatPAX
-	startupDir    string
 	skipSrcGlobs  []Matcher
 	skipDestGlobs []Matcher
 	skipUserInfo  bool
@@ -179,7 +178,7 @@ func (p *Args) Shift() (s string, ok bool) {
 }
 
 func usage() {
-	io.WriteString(os.Stderr,
+	_, _ = io.WriteString(os.Stderr,
 		`Usage: mtar [-h|--help] [FILE|OPTION]
 
 Writes a tar file to standard output.
@@ -279,10 +278,6 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("mtar: ")
 
-	var err error
-	startupDir, err = os.Getwd()
-	failOnError("getwd", err)
-
 	// Using some pretty weird CLI arguments here so incoming weird as hell arg loop ahead
 	if len(os.Args) <= 1 || os.Args[1] == "-h" || os.Args[1] == "--help" {
 		usage()
@@ -380,11 +375,11 @@ func main() {
 			if s, ok = argv.Shift(); !ok {
 				log.Fatal("-C: missing directory")
 			}
-			failOnError("cd", changeDir(s))
+			failOnError("cd", os.Chdir(s))
 			continue
 
 		case strings.HasPrefix(s, "-C"): // cd
-			failOnError("cd", changeDir(s[2:]))
+			failOnError("cd", os.Chdir(s[2:]))
 
 		// Add files
 		default:
@@ -401,7 +396,7 @@ func main() {
 
 			opts := newFileOpts()
 			if idx := strings.IndexByte(dest, ':'); idx > -1 {
-				err = opts.parse(dest[idx+1:])
+				err := opts.parse(dest[idx+1:])
 				failOnError("cannot parse options for "+src, err)
 				dest = dest[:idx]
 			}
@@ -622,7 +617,7 @@ func concatenateTarStream(w *tar.Writer, r *bufio.Reader) error {
 func addRecursive(w *tar.Writer, src, prefix string, opts *FileOpts) {
 	src = strings.TrimRight(src, "/")
 	src = filepath.Clean(src) + "/"
-	filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
 		if info.IsDir() && !strings.HasSuffix(p, "/") {
 			p += "/"
 		}
@@ -633,14 +628,6 @@ func addRecursive(w *tar.Writer, src, prefix string, opts *FileOpts) {
 		addFile(w, p, dest, opts, false)
 		return nil
 	})
-}
-
-func changeDir(dir string) error {
-	const pathsep = string(filepath.Separator)
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(startupDir, dir)
-	}
-	return os.Chdir(dir)
 }
 
 func failOnError(prefix string, err error) {
