@@ -92,6 +92,17 @@
 //        Do not assign user information to files.
 //      -u
 //        Assign user information to files (default).
+//      -Fformat | -F format
+//        Set the tar header format to use. May be one of the following
+//        formats:
+//          * 'pax', '2001', 'posix.1-2001' (default)
+//            Modern POSIX tar format.
+//          * 'ustar', '1988', 'posix.1-1988'
+//            The tar format written by most tar programs by default.
+//            Does not support files over 8GiB.
+//          * 'gnu'
+//            A format specific to GNU tar archives.
+//            Should not be chosen unless absolutely required.
 //      -Cdir | -C dir
 //        Change to directory (relative to PWD at all times; -C. will reset
 //        the current directory) for subsequent file additions.
@@ -138,6 +149,7 @@ func (m Matcher) matches(s string) bool {
 	return m.rx.MatchString(s) == m.want
 }
 
+var hdrFormat = tar.FormatPAX
 var startupTime = time.Now()
 var startupDir string
 var skipSrcGlobs []Matcher
@@ -212,6 +224,17 @@ control archive creation:
     Do not assign user information to files.
   -u
     Assign user information to files (default).
+  -Fformat | -F format
+    Set the tar header format to use. May be one of the following
+    formats:
+      * 'pax', '2001', 'posix.1-2001' (default)
+        Modern POSIX tar format.
+      * 'ustar', '1988', 'posix.1-1988'
+        The tar format written by most tar programs by default.
+        Does not support files over 8GiB.
+      * 'gnu'
+        A format specific to GNU tar archives.
+        Should not be chosen unless absolutely required.
   -Cdir | -C dir
     Change to directory (relative to PWD at all times; -C. will reset
     the current directory) for subsequent file additions.
@@ -252,6 +275,31 @@ func main() {
 
 	for s, ok := argv.Shift(); ok; s, ok = argv.Shift() {
 		switch {
+		// Set format
+		case strings.HasPrefix(s, "-F"):
+			fstr := strings.TrimPrefix(s, "-F")
+			if fstr == "" {
+				if fstr, ok = argv.Shift(); !ok {
+					log.Fatal("-F: missing format (ustar, pax, gnu)")
+				}
+			}
+
+			pred := hdrFormat
+			switch strings.ToLower(fstr) {
+			case "ustar", "1988", "posix.1-1988":
+				hdrFormat = tar.FormatUSTAR
+			case "pax", "2001", "posix.1-2001":
+				hdrFormat = tar.FormatPAX
+			case "gnu":
+				hdrFormat = tar.FormatGNU
+			default:
+				log.Fatalf("-F: unrecognized format %q", fstr)
+			}
+
+			if pred != hdrFormat && len(written) > 0 {
+				log.Printf("Warning: tar format changing mid-stream (%v -> %v)", pred, hdrFormat)
+			}
+
 		// Filter flags
 		case s == "-Ro": // reset output filters
 			skipSrcGlobs = nil
@@ -357,7 +405,7 @@ func addFile(w *tar.Writer, src, dest string, opts *FileOpts, allowRecursive boo
 		Typeflag: tar.TypeReg,
 		ModTime:  st.ModTime(),
 		Mode:     int64(st.Mode().Perm()),
-		Format:   tar.FormatPAX,
+		Format:   hdrFormat,
 	}
 
 	if uid, gid, ok := opts.getUidGid(st); ok {
