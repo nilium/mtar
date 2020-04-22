@@ -90,10 +90,14 @@
 //
 //      -h | --help
 //        When passed as the first argument, print this usage text.
+//      -D
+//        Prevent duplicate entries with the same name. (default)
+//      -d
+//        Allow duplicate entries with the same name.
 //      -U
 //        Do not assign user information to files.
 //      -u
-//        Assign user information to files (default).
+//        Assign user information to files. (default)
 //      -Fformat | -F format
 //        Set the tar header format to use. May be one of the following
 //        formats:
@@ -151,12 +155,17 @@ func (m Matcher) matches(s string) bool {
 	return m.rx.MatchString(s) == m.want
 }
 
-var hdrFormat = tar.FormatPAX
-var startupTime = time.Now()
-var startupDir string
-var skipSrcGlobs []Matcher
-var skipDestGlobs []Matcher
-var skipUserInfo bool
+var (
+	startupTime = time.Now()
+
+	hdrFormat     = tar.FormatPAX
+	startupDir    string
+	skipSrcGlobs  []Matcher
+	skipDestGlobs []Matcher
+	skipUserInfo  bool
+	skipWritten   = true
+	written       = map[string]struct{}{} // Already-written paths
+)
 
 func (p *Args) Shift() (s string, ok bool) {
 	if ok = len(p.args) > 0; ok {
@@ -224,10 +233,14 @@ control archive creation:
 
   -h | --help
     When passed as the first argument, print this usage text.
+  -D
+    Prevent duplicate entries with the same name. (default)
+  -d
+    Allow duplicate entries with the same name.
   -U
     Do not assign user information to files.
   -u
-    Assign user information to files (default).
+    Assign user information to files. (default)
   -Fformat | -F format
     Set the tar header format to use. May be one of the following
     formats:
@@ -329,6 +342,11 @@ func main() {
 		case strings.HasPrefix(s, "-O") || strings.HasPrefix(s, "-o"):
 			want := s[1] == 'o'
 			skipDestGlobs = append(skipDestGlobs, Matcher{rx: regexp.MustCompile(s[2:]), want: want})
+
+		// -D  Skip duplicate header entries.
+		// -d  Allow duplicate header entries.
+		case s == "-D", s == "-d":
+			skipWritten = s == "-D"
 
 		// -U  Do not collect user info for headers unless explicitly set
 		// -u  Enable collection.
@@ -484,6 +502,7 @@ func addFile(w *tar.Writer, src, dest string, opts *FileOpts, allowRecursive boo
 	}
 
 	failOnError("write header: "+hdr.Name, w.WriteHeader(hdr))
+	written[hdr.Name] = struct{}{}
 
 addDirOnly:
 	if st.Mode().IsDir() {
@@ -543,6 +562,9 @@ func failOnError(prefix string, err error) {
 }
 
 func shouldSkip(set []Matcher, s string) bool {
+	if _, seen := written[s]; seen && skipWritten {
+		return seen
+	}
 	for _, m := range set {
 		if !m.matches(s) {
 			return true
